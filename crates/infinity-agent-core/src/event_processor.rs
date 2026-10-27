@@ -1560,7 +1560,7 @@ where
                                 THROTTLED_RETRY_DELAY.as_secs()
                             ));
                             tokio::select! {
-                                _ = tokio::time::sleep(THROTTLED_RETRY_DELAY) => {}
+                                _ = crate::time::sleep(THROTTLED_RETRY_DELAY) => {}
                                 _ = &mut cancel_rx => {
                                     tracing::info!("Completion cancelled during retry wait");
                                     return;
@@ -1573,7 +1573,7 @@ where
                             tracing::warn!("Stream error ({e}), retrying...");
                             yield CompletionEvent::Info(format!("Stream error ({e}), retrying..."));
                             tokio::select! {
-                                _ = tokio::time::sleep(TRANSIENT_RETRY_DELAY) => {}
+                                _ = crate::time::sleep(TRANSIENT_RETRY_DELAY) => {}
                                 _ = &mut cancel_rx => {
                                     tracing::info!("Completion cancelled during retry wait");
                                     return;
@@ -1650,7 +1650,7 @@ where
                         history.discard_turn();
                         yield CompletionEvent::Info("Stream error (unexpected end), retrying...".to_owned());
                         tracing::warn!("Stream ended unexpectedly, discarding partial turn and retrying...");
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        crate::time::sleep(Duration::from_secs(1)).await;
                         retry_count += 1;
                         continue 'outer;
                     } else {
@@ -1683,7 +1683,7 @@ where
                                 history.discard_turn();
                                 yield CompletionEvent::Info(format!("Stream error ({e}), retrying..."));
                                 tracing::warn!("Stream error (transient), discarding partial turn and retrying...");
-                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                crate::time::sleep(Duration::from_secs(1)).await;
                                 retry_count += 1;
                                 continue 'outer;
                             }
@@ -1694,7 +1694,7 @@ where
                                     THROTTLED_RETRY_DELAY.as_secs()
                                 ));
                                 tokio::select! {
-                                    _ = tokio::time::sleep(THROTTLED_RETRY_DELAY) => {}
+                                    _ = crate::time::sleep(THROTTLED_RETRY_DELAY) => {}
                                     _ = &mut cancel_rx => {
                                         tracing::info!("Completion cancelled during retry wait");
                                         return;

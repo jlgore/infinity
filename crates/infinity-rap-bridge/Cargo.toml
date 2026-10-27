@@ -10,14 +10,19 @@ license = "Apache-2.0"
 
 [dependencies]
 infinity-agent-core = { path = "../infinity-agent-core", version = "^0.2.0" }
-rap-client = { path = "../rap-client", version = "^0.2.0" }
+rap-client = { path = "../rap-client", version = "^0.2.0", default-features = false }
 rap-protocol = { path = "../rap-protocol", version = "^0.2.0" }
 infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.2.0" }
 
 serde_json = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
-tokio = { workspace = true, features = ["net", "sync", "rt"] }
+tokio = { workspace = true, features = ["net", "sync", "rt"], optional = true }
+
+[features]
+default = ["local"]
+# Local callback server and reqwest-based tool discovery (native only).
+local = ["dep:tokio", "rap-client/callback-server"]
 
 [dev-dependencies]
 async-trait = { workspace = true }

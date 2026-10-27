@@ -1,0 +1,40 @@
+name = "infinity-agent"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-10-01"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+# Claude is reached through AI Gateway via this binding: no Anthropic key in
+# the Worker. Store an Anthropic key on the gateway (BYOK) or use Unified
+# Billing.
+[ai]
+binding = "AI"
+
+# One SQLite-backed Durable Object per conversation tree.
+[[durable_objects.bindings]]
+name = "AGENT_TREE"
+class_name = "AgentTree"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AgentTree"]
+
+[observability]
+enabled = true
+
+[vars]
+AI_GATEWAY_ID = "default"
+ANTHROPIC_MODEL = "claude-opus-5-5"
+ANTHROPIC_EFFORT = "high"
+# ANTHROPIC_THINKING_DISPLAY = "summarized"
+# ANTHROPIC_REFUSAL_FALLBACKS = "true"
+# ANTHROPIC_MAX_TOKENS = "64000"
+# PUBLIC_URL = "https://infinity-agent.example.workers.dev"
+# SYSTEM_PROMPT = "..."
+# TOOLS_CONFIG = '{"tool_sets":[{"type":"toolset_server","server_url":"https://tools.example.com"}]}'
+
+# Secrets (wrangler secret put <NAME>):
+#   API_TOKEN            required bearer token for /threads/* routes
+#   RAP_CALLBACK_SECRET  recommended; callbacks then go to /rap/callback/<secret>
+#   RAP_AUTH_TOKEN       optional bearer token sent to RAP tool servers

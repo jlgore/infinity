@@ -12,10 +12,13 @@ license = "Apache-2.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
-reqwest = { workspace = true }
 tracing = { workspace = true }
 futures-util = { workspace = true }
 strkind = { workspace = true }
+
+# reqwest-backed clients are native-only; wasm hosts supply their own HTTP.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { workspace = true }
 
 [lints]
 workspace = true

@@ -6,6 +6,7 @@
 //! and a callback server for receiving async results.
 
 /// Local HTTP callback server for receiving async RAP tool results.
+#[cfg(feature = "callback-server")]
 pub mod callback_server;
 /// HTTP and caching abstractions for RAP client operations.
 pub mod http;
