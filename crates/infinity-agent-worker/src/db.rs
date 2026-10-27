@@ -129,6 +129,8 @@ const SCHEMA: &[&str] = &[
     )",
     // Per-thread polling; without it every poll scans the whole log.
     "CREATE INDEX IF NOT EXISTS events_thread_seq ON events (thread_id, seq)",
+    // Retention pruning and expiry scheduling.
+    "CREATE INDEX IF NOT EXISTS events_at ON events (at)",
     "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
 ];
 

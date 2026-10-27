@@ -13,6 +13,8 @@ pub struct WorkerConfig {
     pub public_url: Option<String>,
     pub rap_callback_secret: Option<String>,
     pub rap_auth_token: Option<String>,
+    /// How long event-log entries are kept; `None` keeps them forever.
+    pub event_retention_ms: Option<i64>,
 }
 
 /// A non-empty var or secret.
@@ -67,6 +69,10 @@ impl WorkerConfig {
             public_url: get(env, "PUBLIC_URL"),
             rap_callback_secret: get(env, "RAP_CALLBACK_SECRET"),
             rap_auth_token: get(env, "RAP_AUTH_TOKEN"),
+            event_retention_ms: match parse::<i64>(env, "EVENT_RETENTION_DAYS", 30) {
+                days if days > 0 => Some(days * 24 * 60 * 60 * 1000),
+                _ => None,
+            },
         })
     }
 }

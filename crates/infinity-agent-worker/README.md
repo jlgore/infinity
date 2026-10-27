@@ -77,6 +77,23 @@ curl -X POST "$URL/threads/my-thread/messages" -H "authorization: Bearer $API_TO
 curl "$URL/threads/my-thread/events?after=0&tree=1" -H "authorization: Bearer $API_TOKEN"
 ```
 
+Or subscribe instead of polling: a WebSocket to
+`/threads/:id/events/ws?after=N[&tree=1]` replays the events after `N`, then
+pushes each new one as it is written, in the same `{seq, thread_id, at,
+event}` shape the poll returns. Browsers cannot set headers on a WebSocket,
+so this route also accepts the token as `?token=`. Send `ping` to keep the
+connection alive; the runtime answers `pong` without waking the Durable
+Object. Sockets use the hibernation API, so an idle connection costs no
+Durable Object duration. On reconnect, pass the last `seq` you saw as `after`.
+
+```js
+const ws = new WebSocket(`wss://${host}/threads/my-thread/events/ws?after=0&token=${token}`);
+ws.onmessage = (m) => console.log(JSON.parse(m.data));
+```
+
+Event log entries are kept for `EVENT_RETENTION_DAYS` (conversation history
+itself is not affected).
+
 Events are JSON objects with a `type` of `user_input`, `text`, `thinking`,
 `tool_call`, `tool_result`, `subscription_event`, `oauth_required`,
 `user_choice_required`, `user_choice_dismissed`, `compaction_applied`,
@@ -105,6 +122,7 @@ for child threads.
 | `TOOLS_CONFIG` | var | | `{"tool_sets":[{"type":"toolset_server","server_url":"..."}]}` |
 | `SYSTEM_PROMPT` | var | | Appended to the built-in system prompt |
 | `PUBLIC_URL` | var | request origin | Base of the RAP callback URL |
+| `EVENT_RETENTION_DAYS` | var | `30` | Event log retention; `0` keeps events forever |
 | `API_TOKEN` | secret | required | Client bearer token |
 | `RAP_CALLBACK_SECRET` | secret | | Path secret for RAP callbacks |
 | `RAP_AUTH_TOKEN` | secret | | Bearer token sent to RAP tool servers |
@@ -116,5 +134,4 @@ for child threads.
   and stdio MCP toolsets need a process and are skipped; serve MCP servers
   over HTTP behind RAP instead.
 - RAP view updates are acknowledged and dropped, as on Lambda.
-- Clients poll for events; there is no push channel yet.
 - The core's `tracing` output is not routed to the Workers console.

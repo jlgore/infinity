@@ -7,6 +7,10 @@
 //! at-least-once delivery the Lambda deployment gets from SQS FIFO (request
 //! handlers could not, because the DO keeps accepting requests while a step
 //! awaits the model stream).
+//!
+//! Events are pushed to clients over hibernatable WebSockets (tagged with the
+//! thread they follow), so an idle tree with connected clients is evicted
+//! from memory rather than kept awake by polling.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -26,8 +30,8 @@ use rap_client::toolset_loader::ToolsetLoader;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use worker::{
-    DurableObject, Env, Method, Request, Response, Result, SqlStorageValue, State, Url,
-    console_error, console_warn, durable_object,
+    DurableObject, Env, Method, Request, Response, Result, SqlStorageValue, State, Url, WebSocket,
+    WebSocketIncomingMessage, WebSocketPair, console_error, console_warn, durable_object,
 };
 
 use crate::anthropic::GatewayAnthropicProvider;
@@ -51,7 +55,13 @@ const CHUNK_FLUSH_MS: i64 = 2_000;
 const CHUNK_FLUSH_BYTES: usize = 8 * 1024;
 /// Failed deliveries of one inbox row before it is dropped.
 const MAX_ATTEMPTS: i64 = 5;
-const DEDUP_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+const DEDUP_WINDOW_MS: i64 = DAY_MS;
+/// WebSocket tag for subscribers to every thread in the tree (`*` cannot
+/// appear in a thread ID, which is the tag of a single-thread subscriber).
+const TREE_TAG: &str = "*";
+/// Events per page when replaying the log to a new subscriber.
+const REPLAY_PAGE: i64 = 1000;
 
 type System = AgentSystem<Db, Db, TreeSender, FetchHttpClient>;
 
@@ -88,6 +98,12 @@ impl DurableObject for AgentTree {
         if let Err(e) = db.migrate() {
             console_error!("schema migration failed: {e}");
         }
+        // Keepalive pings are answered by the runtime without waking the
+        // object.
+        match worker::worker_sys::WebSocketRequestResponsePair::new("ping", "pong") {
+            Ok(pair) => state.set_websocket_auto_response(&pair),
+            Err(e) => console_warn!("failed to set WebSocket auto-response: {e:?}"),
+        }
         Self { state, env, db }
     }
 
@@ -96,6 +112,7 @@ impl DurableObject for AgentTree {
         match (req.method(), url.path()) {
             (Method::Post, "/enqueue") => self.enqueue(req.json().await?).await,
             (Method::Get, "/events") => self.events(&url),
+            (Method::Get, "/events/ws") => self.subscribe(&url),
             _ => Response::error("not found", 404),
         }
     }
@@ -104,6 +121,65 @@ impl DurableObject for AgentTree {
         self.drain().await;
         Response::ok("drained")
     }
+
+    async fn websocket_message(
+        &self,
+        _ws: WebSocket,
+        _message: WebSocketIncomingMessage,
+    ) -> Result<()> {
+        // Subscribers only receive; anything but the auto-answered "ping"
+        // is ignored.
+        Ok(())
+    }
+
+    async fn websocket_close(
+        &self,
+        ws: WebSocket,
+        _code: usize,
+        _reason: String,
+        _was_clean: bool,
+    ) -> Result<()> {
+        // Complete the close handshake; this fails harmlessly if the runtime
+        // already replied.
+        let _ = ws.close(Some(1000), Some("closing"));
+        Ok(())
+    }
+
+    async fn websocket_error(&self, _ws: WebSocket, _error: worker::Error) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Which events a poll or subscription asks for.
+struct EventQuery {
+    thread: String,
+    whole_tree: bool,
+    after: i64,
+    limit: i64,
+}
+
+impl EventQuery {
+    fn from_url(url: &Url) -> Self {
+        let param = |name: &str| {
+            url.query_pairs()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.into_owned())
+        };
+        Self {
+            thread: param("thread").unwrap_or_default(),
+            whole_tree: param("tree").is_some_and(|v| v == "1" || v == "true"),
+            after: param("after").and_then(|v| v.parse().ok()).unwrap_or(0),
+            limit: param("limit")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(200)
+                .clamp(1, 1000),
+        }
+    }
+}
+
+/// An event as clients receive it, from polling or a subscription.
+fn event_message(seq: i64, thread_id: &str, at: i64, event: Value) -> Value {
+    json!({ "seq": seq, "thread_id": thread_id, "at": at, "event": event })
 }
 
 impl AgentTree {
@@ -140,19 +216,13 @@ impl AgentTree {
     }
 
     fn events(&self, url: &Url) -> Result<Response> {
-        let param = |name: &str| {
-            url.query_pairs()
-                .find(|(k, _)| k == name)
-                .map(|(_, v)| v.into_owned())
-        };
-        let after: i64 = param("after").and_then(|v| v.parse().ok()).unwrap_or(0);
-        let limit: i64 = param("limit")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(200)
-            .clamp(1, 1000);
-        let whole_tree = param("tree").is_some_and(|v| v == "1" || v == "true");
-        let thread = param("thread").unwrap_or_default();
+        let query = EventQuery::from_url(url);
+        let (events, next) = self.query_events(&query)?;
+        Response::from_json(&json!({ "events": events, "next": next.unwrap_or(query.after) }))
+    }
 
+    /// One page of events matching `query`, and the last page's `seq`.
+    fn query_events(&self, query: &EventQuery) -> Result<(Vec<Value>, Option<i64>)> {
         #[derive(Deserialize)]
         struct Row {
             seq: i64,
@@ -160,35 +230,60 @@ impl AgentTree {
             at: i64,
             data: String,
         }
-        let rows: Vec<Row> = if whole_tree {
+        let rows: Vec<Row> = if query.whole_tree {
             self.db.rows(
                 "SELECT seq, thread_id, at, data FROM events WHERE seq > ? ORDER BY seq LIMIT ?",
-                vec![SqlStorageValue::from(after), SqlStorageValue::from(limit)],
+                vec![
+                    SqlStorageValue::from(query.after),
+                    SqlStorageValue::from(query.limit),
+                ],
             )?
         } else {
             self.db.rows(
                 "SELECT seq, thread_id, at, data FROM events
                  WHERE thread_id = ? AND seq > ? ORDER BY seq LIMIT ?",
                 vec![
-                    s(thread),
-                    SqlStorageValue::from(after),
-                    SqlStorageValue::from(limit),
+                    s(query.thread.as_str()),
+                    SqlStorageValue::from(query.after),
+                    SqlStorageValue::from(query.limit),
                 ],
             )?
         };
-        let next = rows.last().map_or(after, |r| r.seq);
-        let events: Vec<Value> = rows
+        let next = rows.last().map(|r| r.seq);
+        let events = rows
             .into_iter()
             .map(|r| {
-                json!({
-                    "seq": r.seq,
-                    "thread_id": r.thread_id,
-                    "at": r.at,
-                    "event": serde_json::from_str::<Value>(&r.data).unwrap_or(Value::Null),
-                })
+                let event = serde_json::from_str::<Value>(&r.data).unwrap_or(Value::Null);
+                event_message(r.seq, &r.thread_id, r.at, event)
             })
             .collect();
-        Response::from_json(&json!({ "events": events, "next": next }))
+        Ok((events, next))
+    }
+
+    /// Accept a hibernatable WebSocket that receives the log after `after`,
+    /// then every new event. Replay and registration run without an await
+    /// in between, so each event is either replayed or pushed, exactly once.
+    fn subscribe(&self, url: &Url) -> Result<Response> {
+        let mut query = EventQuery::from_url(url);
+        query.limit = REPLAY_PAGE;
+        let WebSocketPair { client, server } = WebSocketPair::new()?;
+        let tag = if query.whole_tree {
+            TREE_TAG
+        } else {
+            query.thread.as_str()
+        };
+        self.state.accept_websocket_with_tags(&server, &[tag]);
+        loop {
+            let (events, next) = self.query_events(&query)?;
+            for event in &events {
+                server.send_with_str(event.to_string())?;
+            }
+            match next {
+                Some(seq) if events.len() as i64 == REPLAY_PAGE => query.after = seq,
+                _ => break,
+            }
+        }
+        Response::from_websocket(client)
     }
 
     /// Move due timers into the inbox.
@@ -282,7 +377,8 @@ impl AgentTree {
             }
         }
 
-        self.schedule_next().await
+        self.prune_events(config.event_retention_ms)?;
+        self.schedule_next(config.event_retention_ms).await
     }
 
     /// Drop rows that keep failing, leaving an error event on their thread.
@@ -311,8 +407,9 @@ impl AgentTree {
     }
 
     /// Point the alarm at the next pending work: now if the inbox has rows,
-    /// else the earliest timer.
-    async fn schedule_next(&self) -> Result<()> {
+    /// else the earliest timer or event-log expiry. Expiry is batched to at
+    /// most one wake-up a day, so idle trees still shed their old events.
+    async fn schedule_next(&self, retention_ms: Option<i64>) -> Result<()> {
         let pending: Option<i64> = self.db.value("SELECT 1 AS v FROM inbox LIMIT 1", vec![])?;
         if pending.is_some() {
             return self.state.storage().set_alarm(0i64).await;
@@ -320,7 +417,19 @@ impl AgentTree {
         let next_timer: Option<Option<i64>> = self
             .db
             .value("SELECT MIN(due_at) AS v FROM timers", vec![])?;
-        if let Some(due) = next_timer.flatten() {
+        let next_expiry = match retention_ms {
+            Some(retention) => self
+                .db
+                .value::<Option<i64>>("SELECT MIN(at) AS v FROM events", vec![])?
+                .flatten()
+                .map(|oldest| oldest + retention + DAY_MS),
+            None => None,
+        };
+        let next = match (next_timer.flatten(), next_expiry) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        if let Some(due) = next {
             self.state
                 .storage()
                 .set_alarm((due - now_ms()).max(0))
@@ -329,15 +438,42 @@ impl AgentTree {
         Ok(())
     }
 
+    /// Append to the event log and push to the thread's and the tree's
+    /// subscribers.
     fn insert_event(&self, thread_id: &str, event: &Value) -> Result<()> {
-        self.db.run(
-            "INSERT INTO events (thread_id, at, data) VALUES (?, ?, ?)",
+        let at = now_ms();
+        let seq: Option<i64> = self.db.value(
+            "INSERT INTO events (thread_id, at, data) VALUES (?, ?, ?) RETURNING seq AS v",
             vec![
                 s(thread_id),
-                SqlStorageValue::from(now_ms()),
+                SqlStorageValue::from(at),
                 s(event.to_string()),
             ],
         )?;
+        let seq =
+            seq.ok_or_else(|| worker::Error::RustError("event insert returned no seq".into()))?;
+
+        let mut sockets = self.state.get_websockets_with_tag(thread_id);
+        sockets.extend(self.state.get_websockets_with_tag(TREE_TAG));
+        if !sockets.is_empty() {
+            let message = event_message(seq, thread_id, at, event.clone()).to_string();
+            for ws in sockets {
+                // A socket that is closing fails to send; it is dropped from
+                // the tag set once closed.
+                let _ = ws.send_with_str(&message);
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete events older than the retention period.
+    fn prune_events(&self, retention_ms: Option<i64>) -> Result<()> {
+        if let Some(retention) = retention_ms {
+            self.db.run(
+                "DELETE FROM events WHERE at < ?",
+                vec![SqlStorageValue::from(now_ms() - retention)],
+            )?;
+        }
         Ok(())
     }
 

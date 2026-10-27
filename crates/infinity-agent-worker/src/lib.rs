@@ -2,6 +2,8 @@
 //!
 //! * `POST /threads/:id/messages` — send user text to a thread.
 //! * `GET  /threads/:id/events?after=N[&tree=1]` — poll a thread's events.
+//! * `GET  /threads/:id/events/ws?after=N[&tree=1]` — WebSocket: replay
+//!   events after `N`, then push new ones as they happen.
 //! * `POST /rap/callback[/:secret]` — RAP tool servers deliver results here.
 //!
 //! Each conversation tree (a root thread and every thread it spawns) is one
@@ -39,6 +41,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .get("/", |_, _| Response::ok("infinity agent worker"))
         .post_async("/threads/:id/messages", post_message)
         .get_async("/threads/:id/events", get_events)
+        .get_async("/threads/:id/events/ws", subscribe_events)
         .post_async("/rap/callback", rap_callback)
         .post_async("/rap/callback/:secret", rap_callback)
         .run(req, env)
@@ -53,10 +56,6 @@ async fn to_tree(
     path_and_query: &str,
     body: Option<String>,
 ) -> Result<Response> {
-    let stub = env
-        .durable_object(TREE_BINDING)?
-        .id_from_name(root_of(thread_id))?
-        .get_stub()?;
     let mut init = RequestInit::new();
     init.with_method(method);
     if let Some(body) = body {
@@ -64,20 +63,48 @@ async fn to_tree(
         headers.set("content-type", "application/json")?;
         init.with_headers(headers).with_body(Some(body.into()));
     }
+    send_to_tree(env, thread_id, path_and_query, &init).await
+}
+
+async fn send_to_tree(
+    env: &Env,
+    thread_id: &str,
+    path_and_query: &str,
+    init: &RequestInit,
+) -> Result<Response> {
+    let stub = env
+        .durable_object(TREE_BINDING)?
+        .id_from_name(root_of(thread_id))?
+        .get_stub()?;
     stub.fetch_with_request(Request::new_with_init(
         &format!("https://agent-tree{path_and_query}"),
-        &init,
+        init,
     )?)
     .await
 }
 
 /// Client routes require `Authorization: Bearer $API_TOKEN` unless the
-/// deployment explicitly sets `ALLOW_UNAUTHENTICATED=true`.
-fn authorize(req: &Request, ctx: &RouteContext<()>) -> Result<Option<Response>> {
+/// deployment explicitly sets `ALLOW_UNAUTHENTICATED=true`. Browsers cannot
+/// set headers on a WebSocket, so the WebSocket route also accepts the token
+/// as `?token=`.
+fn authorize(
+    req: &Request,
+    ctx: &RouteContext<()>,
+    allow_query_token: bool,
+) -> Result<Option<Response>> {
     match config::get(&ctx.env, "API_TOKEN") {
         Some(token) => {
             let header = req.headers().get("authorization")?.unwrap_or_default();
-            if header == format!("Bearer {token}") {
+            let query_token = || {
+                req.url().ok().and_then(|url| {
+                    url.query_pairs()
+                        .find(|(k, _)| k == "token")
+                        .map(|(_, v)| v.into_owned())
+                })
+            };
+            if header == format!("Bearer {token}")
+                || (allow_query_token && query_token().as_deref() == Some(token.as_str()))
+            {
                 Ok(None)
             } else {
                 Response::error("unauthorized", 401).map(Some)
@@ -108,7 +135,7 @@ struct PostMessage {
 }
 
 async fn post_message(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    if let Some(denied) = authorize(&req, &ctx)? {
+    if let Some(denied) = authorize(&req, &ctx, false)? {
         return Ok(denied);
     }
     let thread_id = ctx.param("id").cloned().unwrap_or_default();
@@ -140,30 +167,57 @@ async fn post_message(mut req: Request, ctx: RouteContext<()>) -> Result<Respons
     .await
 }
 
+/// The tree-side event query for a client request: the thread plus the
+/// client's `after`, `limit`, and `tree` parameters.
+fn event_query(req: &Request, thread_id: &str) -> Result<String> {
+    let url = req.url()?;
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("thread", thread_id);
+    for (key, value) in url.query_pairs() {
+        if matches!(key.as_ref(), "after" | "limit" | "tree") {
+            query.append_pair(&key, &value);
+        }
+    }
+    Ok(query.finish())
+}
+
 async fn get_events(req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    if let Some(denied) = authorize(&req, &ctx)? {
+    if let Some(denied) = authorize(&req, &ctx, false)? {
         return Ok(denied);
     }
     let thread_id = ctx.param("id").cloned().unwrap_or_default();
     if !valid_thread_id(&thread_id) {
         return Response::error("invalid thread id", 400);
     }
-    let url = req.url()?;
-    let mut query = url::form_urlencoded::Serializer::new(String::new());
-    query.append_pair("thread", &thread_id);
-    for (key, value) in url.query_pairs() {
-        if matches!(key.as_ref(), "after" | "limit" | "tree") {
-            query.append_pair(&key, &value);
-        }
-    }
+    let query = event_query(&req, &thread_id)?;
     to_tree(
         &ctx.env,
         &thread_id,
         Method::Get,
-        &format!("/events?{}", query.finish()),
+        &format!("/events?{query}"),
         None,
     )
     .await
+}
+
+async fn subscribe_events(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    if let Some(denied) = authorize(&req, &ctx, true)? {
+        return Ok(denied);
+    }
+    let upgrade = req.headers().get("upgrade")?.unwrap_or_default();
+    if !upgrade.eq_ignore_ascii_case("websocket") {
+        return Response::error("expected a WebSocket upgrade", 426);
+    }
+    let thread_id = ctx.param("id").cloned().unwrap_or_default();
+    if !valid_thread_id(&thread_id) {
+        return Response::error("invalid thread id", 400);
+    }
+    let query = event_query(&req, &thread_id)?;
+    let headers = Headers::new();
+    headers.set("upgrade", "websocket")?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Get).with_headers(headers);
+    send_to_tree(&ctx.env, &thread_id, &format!("/events/ws?{query}"), &init).await
 }
 
 /// RAP callbacks (tool results, subscription events, OAuth challenges, user
