@@ -6404,7 +6404,7 @@ Used by:
   itertools 0.13.0
   itertools 0.14.0
   jni 0.21.1
-  js-sys 0.3.103
+  js-sys 0.3.106
   lazy_static 1.5.0
   linux-raw-sys 0.12.1
   linux-raw-sys 0.4.15
@@ -6434,6 +6434,7 @@ Used by:
   scopeguard 1.2.0
   security-framework-sys 2.17.0
   security-framework 3.7.0
+  send_wrapper 0.6.0
   serde_with 3.18.0
   serde_with_macros 3.18.0
   signal-hook-mio 0.2.5
@@ -6460,12 +6461,12 @@ Used by:
   uuid 1.23.1
   wasi 0.11.1+wasi-snapshot-preview1
   wasip2 1.0.3+wasi-0.2.9
-  wasm-bindgen-futures 0.4.76
-  wasm-bindgen-macro-support 0.2.126
-  wasm-bindgen-macro 0.2.126
-  wasm-bindgen-shared 0.2.126
-  wasm-bindgen 0.2.126
-  web-sys 0.3.103
+  wasm-bindgen-futures 0.4.79
+  wasm-bindgen-macro-support 0.2.129
+  wasm-bindgen-macro 0.2.129
+  wasm-bindgen-shared 0.2.129
+  wasm-bindgen 0.2.129
+  web-sys 0.3.106
   wit-bindgen 0.51.0
   wit-bindgen 0.57.1
   xmlparser 0.13.6
@@ -8847,6 +8848,7 @@ Used by:
   infinity-agent-cli 0.2.0
   infinity-agent-core 0.2.0
   infinity-agent-lambda 0.1.0
+  infinity-agent-worker 0.1.0
   infinity-daemon 0.2.0
   infinity-mcp-bridge 0.2.0
   infinity-mdtests 0.1.0
@@ -8900,6 +8902,7 @@ Used by:
   dyn-clone 1.0.20
   etcetera 0.8.0
   eventsource-stream 0.2.3
+  gloo-timers 0.3.0
   http-serde 2.1.1
   hydro_build_utils 0.1.1-alpha.0
   hydro_lang 0.17.0-alpha.4
@@ -8954,6 +8957,7 @@ Used by:
   stageleft 0.15.1
   stageleft_macro 0.15.1
   syn 2.0.117
+  syn 3.0.9
   sync_wrapper 1.0.2
   thin-vec 0.2.16
   thiserror-impl 1.0.69
@@ -8971,9 +8975,13 @@ Used by:
   wasip3 0.4.0+wasi-0.3.0-rc-2026-01-06
   wasite 0.1.0
   wasm-streams 0.5.0
+  wasm-streams 0.7.0
   whoami 1.6.1
   winapi-i686-pc-windows-gnu 0.4.0
   winapi-x86_64-pc-windows-gnu 0.4.0
+  worker-macros 0.8.7
+  worker-sys 0.8.7
+  worker 0.8.7
 
 --------------------------------------------------------------------------------
 Apache License
@@ -9617,6 +9625,7 @@ pub(crate) static GB18030_2022_OVERRIDE_BYTES: [[u8; 2]; 18] = [
 License: BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License
 
 Used by:
+  matchit 0.7.3
   matchit 0.8.4
 
 --------------------------------------------------------------------------------
@@ -9996,14 +10005,13 @@ Used by:
   aws-lc-sys 0.40.0
 
 --------------------------------------------------------------------------------
-ISC License:
+ISC License
 
-Copyright (c) 2004-2010 by Internet Systems Consortium, Inc. ("ISC")
-Copyright (c) 1995-2003 by Internet Software Consortium
+Copyright <year> <owner> 
 
 Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.
 
-THE SOFTWARE IS PROVIDED "AS IS" AND ISC DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL ISC BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 License: MIT License
@@ -11274,6 +11282,7 @@ SOFTWARE.
 License: MIT License
 
 Used by:
+  matchit 0.7.3
   matchit 0.8.4
 
 --------------------------------------------------------------------------------
@@ -11425,6 +11434,35 @@ Used by:
 MIT License
 
 Copyright (c) Tokio Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+License: MIT License
+
+Used by:
+  serde-wasm-bindgen 0.6.5
+
+--------------------------------------------------------------------------------
+MIT License
+
+Copyright (c) 2019 Cloudflare, Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -13389,6 +13427,7 @@ the following restrictions:
     misrepresented as being the original software.
 
 3. This notice may not be removed or altered from any source distribution.
+
 
 
 ================================================================================

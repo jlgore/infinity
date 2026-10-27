@@ -1,0 +1,37 @@
+[package]
+name = "infinity-agent-worker"
+publish = false
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Infinity agent runtime on Cloudflare Workers + Durable Objects."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+infinity-agent-core = { path = "../infinity-agent-core" }
+infinity-rap-bridge = { path = "../infinity-rap-bridge", default-features = false }
+infinity-provider-protocol = { path = "../infinity-provider-protocol" }
+rap-client = { path = "../rap-client", default-features = false }
+rap-protocol = { path = "../rap-protocol" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+async-stream = "0.3"
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+worker = "0.8"
+send_wrapper = { version = "0.6", features = ["futures"] }
+wasm-streams = "0.7"
+# Required by the `#[durable_object]` macro expansion.
+wasm-bindgen = "0.2"
+
+[lints]
+workspace = true

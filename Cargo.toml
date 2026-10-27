@@ -2,6 +2,7 @@
 members = [
     "crates/infinity-agent-core",
     "crates/infinity-agent-lambda",
+    "crates/infinity-agent-worker",
     "crates/infinity-mcp-bridge",
     "crates/infinity-rap-bridge",
     "crates/infinity-agent-cli",
