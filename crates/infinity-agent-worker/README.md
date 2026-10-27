@@ -80,8 +80,10 @@ curl "$URL/threads/my-thread/events?after=0&tree=1" -H "authorization: Bearer $A
 Events are JSON objects with a `type` of `user_input`, `text`, `thinking`,
 `tool_call`, `tool_result`, `subscription_event`, `oauth_required`,
 `user_choice_required`, `user_choice_dismissed`, `compaction_applied`,
-`completion_finished` (with token usage), `info`, or `error`. Streamed text
-and reasoning are coalesced into one event per run.
+`completion_finished` (with token usage), `info`, or `error`. Events are
+written as the agent runs, so a long completion is visible while it streams:
+streamed text and reasoning are written every couple of seconds, and
+consecutive `text` (or `thinking`) events from one thread concatenate.
 
 Thread IDs may contain ASCII letters, digits, and `-_.:`; `~` is reserved
 for child threads.

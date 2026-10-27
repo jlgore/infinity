@@ -119,12 +119,16 @@ const SCHEMA: &[&str] = &[
     )",
     "CREATE INDEX IF NOT EXISTS timers_due_at ON timers (due_at)",
     "CREATE TABLE IF NOT EXISTS dedup (key TEXT PRIMARY KEY, at INTEGER NOT NULL)",
+    // Expiry is pruned on every enqueue.
+    "CREATE INDEX IF NOT EXISTS dedup_at ON dedup (at)",
     "CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         thread_id TEXT NOT NULL,
         at INTEGER NOT NULL,
         data TEXT NOT NULL
     )",
+    // Per-thread polling; without it every poll scans the whole log.
+    "CREATE INDEX IF NOT EXISTS events_thread_seq ON events (thread_id, seq)",
     "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
 ];
 
@@ -212,10 +216,22 @@ impl Db {
         self.value("SELECT value AS v FROM kv WHERE key = ?", vec![s(key)])
     }
 
+    /// Forget processed-ID records that can no longer be redelivered. Inbox
+    /// rows get fresh IDs (see `TreeSender::enqueue`), so once a row leaves
+    /// the inbox its ID never reappears; without this the table, and the set
+    /// `get_processed_ids` loads on every step, grows with each user turn.
+    pub fn prune_processed_ids(&self) -> Result<(), StoreError> {
+        self.run(
+            "DELETE FROM processed_ids WHERE message_id NOT IN (SELECT message_id FROM inbox)",
+            vec![],
+        )
+    }
+
     pub fn kv_set(&self, key: &str, value: &str) -> Result<(), StoreError> {
         self.run(
             "INSERT INTO kv (key, value) VALUES (?, ?)
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value
+             WHERE value IS NOT excluded.value",
             vec![s(key), s(value)],
         )
     }

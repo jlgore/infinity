@@ -8,14 +8,15 @@
 //! handlers could not, because the DO keeps accepting requests while a step
 //! awaits the model stream).
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use infinity_agent_core::ThreadId;
 use infinity_agent_core::message::InputMessage;
 use infinity_agent_core::system::{
-    AgentEvent, AgentSystem, AgentSystemBuilder, EventCollector, NoDeferral, StaticModel,
-    ThreadConfig, ThreadConfigSource,
+    AgentEvent, AgentSystem, AgentSystemBuilder, NoDeferral, StaticModel, ThreadConfig,
+    ThreadConfigSource, ThreadObserver,
 };
 use infinity_agent_core::tools::Tool;
 use infinity_agent_core::tools::rap_tool::RapTool;
@@ -40,6 +41,14 @@ use crate::sleep::{SleepTool, SleepUntilTool};
 const BATCH_SIZE: i64 = 25;
 /// `step` rounds per alarm before yielding to a fresh alarm invocation.
 const MAX_ROUNDS: usize = 20;
+/// No new round starts once an alarm has run this long. Each round is at
+/// least one model call, and an alarm handler is cut off after 15 minutes
+/// of wall time, losing that round's work.
+const ROUND_BUDGET_MS: i64 = 5 * 60 * 1000;
+/// Streamed text is written to the event log at least this often...
+const CHUNK_FLUSH_MS: i64 = 2_000;
+/// ...or once this many bytes are buffered.
+const CHUNK_FLUSH_BYTES: usize = 8 * 1024;
 /// Failed deliveries of one inbox row before it is dropped.
 const MAX_ATTEMPTS: i64 = 5;
 const DEDUP_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
@@ -220,7 +229,11 @@ impl AgentTree {
             data: String,
         }
 
+        let started = now_ms();
         for _ in 0..MAX_ROUNDS {
+            if now_ms() - started > ROUND_BUDGET_MS {
+                break;
+            }
             self.release_timers()?;
             let rows: Vec<InboxRow> = self.db.rows(
                 "SELECT seq, message_id, data FROM inbox ORDER BY seq LIMIT ?",
@@ -239,18 +252,21 @@ impl AgentTree {
                 }
             }
 
-            let collector = EventCollector::new();
-            let result = system.step(inputs, &collector, &mut NoDeferral).await;
-            self.record_events(collector.take())?;
+            let log = EventLog::new(self);
+            let result = system.step(inputs, &log, &mut NoDeferral).await;
+            log.flush();
 
             let placeholders = vec!["?"; seqs.len()].join(",");
             let seq_values: Vec<SqlStorageValue> =
                 seqs.iter().map(|s| SqlStorageValue::from(*s)).collect();
             match result {
-                Ok(_) => self.db.run(
-                    &format!("DELETE FROM inbox WHERE seq IN ({placeholders})"),
-                    seq_values,
-                )?,
+                Ok(_) => {
+                    self.db.run(
+                        &format!("DELETE FROM inbox WHERE seq IN ({placeholders})"),
+                        seq_values,
+                    )?;
+                    self.db.prune_processed_ids()?;
+                }
                 Err(e) => {
                     console_error!("step failed: {e}");
                     self.db.run(
@@ -325,41 +341,6 @@ impl AgentTree {
         Ok(())
     }
 
-    /// Persist a step's events, coalescing streamed text and reasoning
-    /// chunks into one event per run.
-    fn record_events(&self, events: Vec<(ThreadId, AgentEvent)>) -> Result<()> {
-        let mut pending: Option<(ThreadId, &'static str, String)> = None;
-        let flush = |pending: &mut Option<(ThreadId, &'static str, String)>| -> Result<()> {
-            if let Some((thread, kind, text)) = pending.take() {
-                self.insert_event(thread.as_str(), &json!({ "type": kind, "text": text }))?;
-            }
-            Ok(())
-        };
-
-        for (thread, event) in events {
-            let chunk = match &event {
-                AgentEvent::TextChunk { text } => Some(("text", text)),
-                AgentEvent::ThinkingChunk { text } => Some(("thinking", text)),
-                _ => None,
-            };
-            if let Some((kind, text)) = chunk {
-                match &mut pending {
-                    Some((t, k, buf)) if *t == thread && *k == kind => buf.push_str(text),
-                    _ => {
-                        flush(&mut pending)?;
-                        pending = Some((thread, kind, text.clone()));
-                    }
-                }
-                continue;
-            }
-            flush(&mut pending)?;
-            if let Some(value) = event_json(&event) {
-                self.insert_event(thread.as_str(), &value)?;
-            }
-        }
-        flush(&mut pending)
-    }
-
     fn build_system(&self, root: &str, config: &WorkerConfig) -> Result<System> {
         let provider = Arc::new(GatewayAnthropicProvider::new(
             self.env
@@ -405,8 +386,93 @@ impl AgentTree {
     }
 }
 
+/// Writes a step's events to the tree's event log as they are emitted, so
+/// pollers see a long completion while it streams (and nothing is lost if
+/// the alarm is cut off mid-step). Streamed text and reasoning chunks are
+/// buffered per run and written every [`CHUNK_FLUSH_MS`] or
+/// [`CHUNK_FLUSH_BYTES`], rather than one row per chunk.
+struct EventLog<'a> {
+    tree: &'a AgentTree,
+    pending: RefCell<Option<PendingChunks>>,
+}
+
+struct PendingChunks {
+    thread: ThreadId,
+    kind: &'static str,
+    text: String,
+    since: i64,
+}
+
+impl<'a> EventLog<'a> {
+    fn new(tree: &'a AgentTree) -> Self {
+        Self {
+            tree,
+            pending: RefCell::new(None),
+        }
+    }
+
+    fn write(&self, thread_id: &str, event: &Value) {
+        if let Err(e) = self.tree.insert_event(thread_id, event) {
+            console_error!("failed to record event: {e}");
+        }
+    }
+
+    /// Write any buffered chunks.
+    fn flush(&self) {
+        if let Some(p) = self.pending.borrow_mut().take() {
+            self.write(
+                p.thread.as_str(),
+                &json!({ "type": p.kind, "text": p.text }),
+            );
+        }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl ThreadObserver for EventLog<'_> {
+    type SubscribeRequest = ();
+
+    fn on_event(&self, thread_id: &ThreadId<str>, event: &AgentEvent) {
+        let chunk = match event {
+            AgentEvent::TextChunk { text } => Some(("text", text)),
+            AgentEvent::ThinkingChunk { text } => Some(("thinking", text)),
+            _ => None,
+        };
+        let Some((kind, text)) = chunk else {
+            self.flush();
+            if let Some(value) = event_json(event) {
+                self.write(thread_id.as_str(), &value);
+            }
+            return;
+        };
+
+        let continues = matches!(
+            &*self.pending.borrow(),
+            Some(p) if *p.thread == *thread_id && p.kind == kind
+        );
+        if !continues {
+            self.flush();
+            *self.pending.borrow_mut() = Some(PendingChunks {
+                thread: thread_id.to_owned(),
+                kind,
+                text: String::new(),
+                since: now_ms(),
+            });
+        }
+        let due = {
+            let mut pending = self.pending.borrow_mut();
+            let p = pending.as_mut().expect("pending chunks were just set");
+            p.text.push_str(text);
+            p.text.len() >= CHUNK_FLUSH_BYTES || now_ms() - p.since >= CHUNK_FLUSH_MS
+        };
+        if due {
+            self.flush();
+        }
+    }
+}
+
 /// The JSON form of an event in the tree's event log (streamed chunks are
-/// coalesced by `record_events`).
+/// buffered by [`EventLog`]).
 fn event_json(event: &AgentEvent) -> Option<Value> {
     Some(match event {
         AgentEvent::UserInput { text } => json!({ "type": "user_input", "text": text }),
