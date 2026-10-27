@@ -9,7 +9,7 @@ repository = { workspace = true }
 license = "Apache-2.0"
 
 [dependencies]
-rap-client = { path = "../rap-client", version = "^0.2.0" }
+rap-client = { path = "../rap-client", version = "^0.2.0", default-features = false }
 rap-protocol = { path = "../rap-protocol", version = "^0.2.0" }
 infinity-provider-protocol = { path = "../infinity-provider-protocol", version = "^0.2.0" }
 serde = { workspace = true }
@@ -25,6 +25,15 @@ uuid = { workspace = true }
 url = { workspace = true }
 tracing = { workspace = true }
 rhai = { workspace = true }
+
+# wasm32 (e.g. Cloudflare Workers): JS-backed randomness and clocks.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+rhai = { workspace = true, features = ["wasm-bindgen"] }
+chrono = { workspace = true, features = ["wasmbind"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+send_wrapper = { version = "0.6", features = ["futures"] }
 
 [dev-dependencies]
 insta = { version = "1", features = ["json", "redactions"] }

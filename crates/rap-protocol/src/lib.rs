@@ -249,16 +249,19 @@ pub trait CallbackClient: Send + Sync + 'static {
 }
 
 /// Plain reqwest client for local mode (no auth needed).
+#[cfg(not(target_arch = "wasm32"))]
 pub struct PlainCallbackClient {
     client: reqwest::Client,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for PlainCallbackClient {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl PlainCallbackClient {
     pub fn new() -> Self {
         Self {
@@ -267,6 +270,7 @@ impl PlainCallbackClient {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[async_trait]
 impl CallbackClient for PlainCallbackClient {
     async fn post_json(
