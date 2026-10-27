@@ -149,18 +149,27 @@ struct ApiError {
 impl ApiError {
     fn from_body(status: u16, body: &str) -> Self {
         let parsed: Option<Value> = serde_json::from_str(body).ok();
-        let error = parsed.as_ref().and_then(|v| v.get("error"));
-        Self {
-            status,
-            error_type: error
-                .and_then(|e| e.get("type"))
+        let str_at = |v: Option<&Value>, key: &str| {
+            v.and_then(|e| e.get(key))
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            message: error
-                .and_then(|e| e.get("message"))
-                .and_then(Value::as_str)
-                .map_or_else(|| body.to_owned(), str::to_owned),
+                .map(str::to_owned)
+        };
+        match parsed.as_ref().and_then(|v| v.get("error")) {
+            // AI Gateway's own errors: `{"error": [{"code": 2021, "message": ...}]}`.
+            Some(Value::Array(errors)) => Self {
+                status,
+                error_type: errors
+                    .first()
+                    .and_then(|e| e.get("code"))
+                    .map_or_else(|| "ai_gateway".to_owned(), |c| format!("ai_gateway {c}")),
+                message: str_at(errors.first(), "message").unwrap_or_else(|| body.to_owned()),
+            },
+            // Anthropic: `{"error": {"type": ..., "message": ...}}`.
+            error => Self {
+                status,
+                error_type: str_at(error, "type").unwrap_or_default(),
+                message: str_at(error, "message").unwrap_or_else(|| body.to_owned()),
+            },
         }
     }
 
@@ -792,6 +801,24 @@ mod tests {
         assert_eq!(usage.input_tokens, 15);
         assert_eq!(usage.cached_input_tokens, 5);
         assert_eq!(usage.output_tokens, 20);
+    }
+
+    #[test]
+    fn parses_gateway_and_anthropic_errors() {
+        let gateway = ApiError::from_body(
+            402,
+            r#"{"success":false,"error":[{"code":2021,"message":"Insufficient unified billing credits."}]}"#,
+        );
+        assert_eq!(gateway.error_type, "ai_gateway 2021");
+        assert_eq!(gateway.message, "Insufficient unified billing credits.");
+        assert_eq!(gateway.class(), ErrorClass::Fatal);
+
+        let anthropic = ApiError::from_body(
+            529,
+            r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+        );
+        assert_eq!(anthropic.error_type, "overloaded_error");
+        assert_eq!(anthropic.class(), ErrorClass::Transient);
     }
 
     #[test]
