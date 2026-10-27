@@ -136,6 +136,10 @@ fn i(value: i64) -> SqlStorageValue {
     SqlStorageValue::from(value)
 }
 
+fn one_line(query: &str) -> String {
+    query.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[derive(Deserialize)]
 struct One<T> {
     v: T,
@@ -161,7 +165,7 @@ impl Db {
 
     pub fn run(&self, query: &str, bindings: Vec<SqlStorageValue>) -> Result<(), StoreError> {
         // Drain the cursor so the statement fully executes.
-        let _: Vec<serde_json::Value> = self.sql.exec(query, bindings)?.to_array()?;
+        let _: Vec<serde_json::Value> = self.rows(query, bindings)?;
         Ok(())
     }
 
@@ -170,7 +174,10 @@ impl Db {
         query: &str,
         bindings: Vec<SqlStorageValue>,
     ) -> Result<Vec<T>, StoreError> {
-        Ok(self.sql.exec(query, bindings)?.to_array()?)
+        self.sql
+            .exec(query, bindings)
+            .and_then(|cursor| cursor.to_array())
+            .map_err(|e| StoreError(format!("{e} (in `{}`)", one_line(query))))
     }
 
     /// The single column `v` of the first row, if any.
@@ -275,11 +282,12 @@ impl ConversationStore for Db {
         session_id: &ThreadId<str>,
         messages: Vec<(InfinityMessage, String)>,
     ) -> Result<(), StoreError> {
-        let max: Option<i64> = self.value(
+        // MAX always yields one row; it is NULL for a thread with no messages.
+        let max: Option<Option<i64>> = self.value(
             "SELECT MAX(ord) AS v FROM messages WHERE thread_id = ?",
             vec![s(session_id.as_str())],
         )?;
-        let mut ord = max.unwrap_or(0);
+        let mut ord = max.flatten().unwrap_or(0);
         for (message, message_id) in messages {
             ord += 1;
             self.run(
